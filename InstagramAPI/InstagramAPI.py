@@ -966,8 +966,9 @@ class InstagramAPI:
                     response = self.s.get(self.API_URL + endpoint, verify=verify)
                 break
             except Exception as e:
-                print('Except on SendRequest (wait 60 sec and resend): ' + str(e))
-                time.sleep(60)
+                sleep_time = random.randint(1, 10)
+                print('Except on SendRequest (wait %s sec and resend): %s' % (sleep_time, str(e)))
+                time.sleep(sleep_time)
 
         if response.status_code == 200:
             self.LastResponse = response
