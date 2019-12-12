@@ -17,6 +17,10 @@ import calendar
 import os
 from requests_toolbelt import MultipartEncoder
 
+import pycurl
+import io
+import re
+
 # Turn off InsecureRequestWarning
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -62,6 +66,7 @@ class InstagramAPI:
     # IGDataPath          # Data storage path
 
     def __init__(self, username, password, debug=False, IGDataPath=None):
+        """
         m = hashlib.md5()
         m.update(username.encode('utf-8') + password.encode('utf-8'))
         self.device_id = self.generateDeviceId(m.hexdigest())
@@ -69,11 +74,26 @@ class InstagramAPI:
         self.isLoggedIn = False
         self.LastResponse = None
         self.s = requests.Session()
+        """
+        m = hashlib.md5()
+        m.update(username.encode('utf-8') + password.encode('utf-8'))
+        self.device_id = self.generateDeviceId(m.hexdigest())
+        self.setUser(username, password)
+        self.isLoggedIn = False
+        self.LastResponse = None
+        self.s = requests.Session()
+        self.IGDataPath = IGDataPath
+
+    def setUser_old(self, username, password):
+        self.username = username
+        self.password = password
+        self.uuid = self.generateUUID(True)
 
     def setUser(self, username, password):
         self.username = username
         self.password = password
         self.uuid = self.generateUUID(True)
+        self.phone_id = self.generateUUID(True)
 
     def setProxy(self, proxy=None):
         """
@@ -87,7 +107,8 @@ class InstagramAPI:
             proxies = {'http': proxy, 'https': proxy}
             self.s.proxies.update(proxies)
 
-    def login(self, force=False):
+    def login_old(self, force=False):
+        print 'login'
         if (not self.isLoggedIn or force):
             if (self.SendRequest('si/fetch_headers/?challenge_type=signup&guid=' + self.generateUUID(False), None, True)):
 
@@ -105,6 +126,36 @@ class InstagramAPI:
                     self.rank_token = "%s_%s" % (self.username_id, self.uuid)
                     self.token = self.LastResponse.cookies["csrftoken"]
 
+                    self.syncFeatures()
+                    self.autoCompleteUserList()
+                    self.timelineFeed()
+                    self.getv2Inbox()
+                    self.getRecentActivity()
+                    print("Login success!\n")
+                    return True
+
+    def login(self, force=False):
+        if (not self.isLoggedIn or force):
+           
+            if (self.SendRequest('si/fetch_headers/?challenge_type=signup&guid=' + self.generateUUID(False), None, True)):
+                data = {
+                        'country_codes': '[{"country_code":"1","source":["default"]}]',
+                        'phone_id': self.phone_id,
+                        '_csrftoken': self.LastResponseCsrftoken,
+                        'username': self.username,
+                        'guid': self.uuid,
+                        'device_id': self.device_id,
+                        'password': self.password,
+                        'google_tokens':'[]',
+                        'login_attempt_count': '0'}
+                
+                if (self.SendRequest('accounts/login/', self.generateSignature(json.dumps(data)), True)):
+                    
+                    self.isLoggedIn = True
+                    self.username_id = self.LastJson["logged_in_user"]["pk"]
+                    self.rank_token = "%s_%s" % (self.username_id, self.uuid)
+                    self.token = self.LastResponseCsrftoken
+                    
                     self.syncFeatures()
                     self.autoCompleteUserList()
                     self.timelineFeed()
@@ -945,7 +996,7 @@ class InstagramAPI:
         body += u'--{boundary}--'.format(boundary=boundary)
         return body
 
-    def SendRequest(self, endpoint, post=None, login=False):
+    def SendRequest_old(self, endpoint, post=None, login=False):
         verify = False  # don't show request warning
 
         if (not self.isLoggedIn and not login):
@@ -988,6 +1039,96 @@ class InstagramAPI:
             except:
                 pass
             return False
+
+    def SendRequest(self, endpoint, post=None, login=False):
+        ch = pycurl.Curl()
+        headers = ['Connection:close',
+                   'Accept:*/*',
+                   'Content-type:application/x-www-form-urlencoded; charset=UTF-8',
+                   'Cookie2:$Version=1',
+                   'Accept-Language:en-US',
+                   'User-Agent:'+ self.USER_AGENT]
+
+        ch.setopt(pycurl.URL, self.API_URL + endpoint)
+        ch.setopt(pycurl.USERAGENT, self.USER_AGENT)
+        ch.setopt(pycurl.FOLLOWLOCATION, True)
+        ch.setopt(pycurl.HEADER, False)
+        if headers:
+            ch.setopt(pycurl.HTTPHEADER, headers)
+
+
+        ch.setopt(pycurl.SSL_VERIFYPEER, False)
+        ch.setopt(pycurl.SSL_VERIFYHOST, False)
+        
+        pathCookies = self.IGDataPath+'/cookies/'
+
+        if(not os.path.exists(pathCookies)):
+            os.mkdir(pathCookies)
+
+        ch.setopt(pycurl.COOKIEFILE, pathCookies+self.username+'.dat')
+        ch.setopt(pycurl.COOKIEJAR, pathCookies+self.username+'.dat')
+
+        if post:
+            import urllib
+            ch.setopt(pycurl.POST, len(post))
+            ch.setopt(pycurl.POSTFIELDS, post)
+
+        data = io.BytesIO()
+        ch.setopt(ch.WRITEFUNCTION, data.write)
+        
+        ch.perform()
+
+        cookies = ch.getinfo(pycurl.INFO_COOKIELIST)
+        for cookie in cookies:
+            if re.search(r'\bcsrftoken\b', cookie):
+                csrftoken = cookie[cookie.find('csrftoken')+9:].strip();
+                break
+
+        if(ch.getinfo(pycurl.HTTP_CODE) == 200):
+            self.LastResponse = data.getvalue()
+            self.LastResponseCsrftoken = csrftoken
+            self.LastJson = json.loads(data.getvalue())
+            ch.close()
+            return True
+        
+        else:
+            print("Request return " + str(ch.getinfo(pycurl.HTTP_CODE)) + " error!")
+            # for debugging
+            try:
+                self.LastResponse = data.getvalue()
+                self.LastJson = json.loads(data.getvalue())
+                print(self.LastJson)
+            except:
+                pass
+            ch.close()
+            return False
+
+    def getCodeChallengeRequired(self, path, choice=0):
+        username_id = path.partition('/')[2].partition('/')[0]
+        print 'username_id', username_id
+
+        self.SendRequest(path, None, True)
+
+        data = {'choice':choice,
+                    '_uuid':self.uuid,
+                    'guid':self.uuid,
+                    'device_id':self.device_id,
+                    '_uid':username_id,
+                    '_csrftoken':self.LastResponseCsrftoken}
+        
+        self.SendRequest(path, self.generateSignature(json.dumps(data)), True)
+
+    def setCodeChallengeRequired(self, path, code):
+        username_id = path.partition('/')[2].partition('/')[0]
+
+        data = {'security_code':code,
+                    '_uuid':self.uuid,
+                    'guid':self.uuid,
+                    'device_id':self.device_id,
+                    '_uid':username_id,
+                    '_csrftoken':self.LastResponseCsrftoken}
+        
+        self.SendRequest(path, self.generateSignature(json.dumps(data)), True)
 
     def getTotalFollowers(self, usernameId):
         followers = []

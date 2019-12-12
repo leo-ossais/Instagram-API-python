@@ -1,3 +1,5 @@
 *.pyc
 InstagramApi.egg-info/
 dist/
+cookies
+teste-api.py
